@@ -1,0 +1,10 @@
+backups/
+restore-test/
+*.tar.gz
+*.pem
+*.key
+.env
+__pycache__/
+*.pyc
+id_ed25519
+id_ed25519.pub

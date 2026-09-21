@@ -1,0 +1,61 @@
+---
+- name: Configure HPC users and groups
+  hosts: hpc_cluster
+  become: true
+
+  tasks:
+
+    - name: Create hpc-admins group
+      group:
+        name: hpc-admins
+        gid: 2001
+        state: present
+
+    - name: Create hpc-researchers group
+      group:
+        name: hpc-researchers
+        gid: 2002
+        state: present
+
+    - name: Create hpcadmin user
+      user:
+        name: hpcadmin
+        uid: 3001
+        group: hpc-admins
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create researcher1
+      user:
+        name: researcher1
+        uid: 3002
+        group: hpc-researchers
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create researcher2
+      user:
+        name: researcher2
+        uid: 3003
+        group: hpc-researchers
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create research project directory
+      file:
+        path: /research/projects
+        state: directory
+        owner: root
+        group: hpc-researchers
+        mode: '2770'
+
+    - name: Create research results directory
+      file:
+        path: /research/results
+        state: directory
+        owner: root
+        group: hpc-researchers
+        mode: '2770'

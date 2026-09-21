@@ -1,0 +1,84 @@
+---
+- name: Security hardening for HPC servers
+  hosts: hpc_cluster
+  become: true
+
+  tasks:
+
+    - name: Install security packages
+      apt:
+        name:
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+        state: present
+        update_cache: yes
+
+    - name: Disable root SSH login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+
+    - name: Enable SSH public key authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+
+    - name: Validate SSH configuration
+      command: sshd -t
+      changed_when: false
+
+    - name: Restart SSH
+      systemd:
+        name: ssh
+        state: restarted
+
+    - name: Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Allow Slurm controller traffic
+      ufw:
+        rule: allow
+        port: '6817'
+        proto: tcp
+
+    - name: Allow Slurm compute traffic
+      ufw:
+        rule: allow
+        port: '6818'
+        proto: tcp
+
+    - name: Allow Node Exporter
+      ufw:
+        rule: allow
+        port: '9100'
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Enable Fail2ban
+      systemd:
+        name: fail2ban
+        enabled: yes
+        state: started
+
+    - name: Enable automatic security updates
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";

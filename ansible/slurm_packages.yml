@@ -1,0 +1,23 @@
+---
+- name: Install Slurm and Munge
+  hosts: hpc_cluster
+  become: true
+
+  tasks:
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Slurm and Munge packages
+      apt:
+        name:
+          - slurm-wlm
+          - munge
+          - libmunge2
+        state: present
+
+    - name: Enable Munge service
+      systemd:
+        name: munge
+        enabled: yes
