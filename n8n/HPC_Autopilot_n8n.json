@@ -1,0 +1,215 @@
+{
+  "name": "HPC Autopilot - Health, Self-Heal & Audit",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -900,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -900,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "command",
+        "operation": "execute",
+        "command": "set -u\n\nssh_opts=\"-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new\"\n\ncontroller_reachable=$(ssh $ssh_opts ubuntu@hpc-controller 'echo ok' 2>/dev/null || echo fail)\ncompute_reachable=$(ssh $ssh_opts ubuntu@hpc-compute01 'echo ok' 2>/dev/null || echo fail)\n\nslurmctld=$(ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active slurmctld 2>/dev/null || true' 2>/dev/null || echo unknown)\ncontroller_munge=$(ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active munge 2>/dev/null || true' 2>/dev/null || echo unknown)\n\nslurmd=$(ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active slurmd 2>/dev/null || true' 2>/dev/null || echo unknown)\ncompute_munge=$(ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active munge 2>/dev/null || true' 2>/dev/null || echo unknown)\n\nslurm_controller=$(ssh $ssh_opts ubuntu@hpc-controller 'scontrol ping 2>/dev/null | grep -q \"UP\" && echo up || echo down' 2>/dev/null || echo down)\nslurm_state=$(ssh $ssh_opts ubuntu@hpc-controller \"sinfo -h -N -o '%T' 2>/dev/null | head -1\" 2>/dev/null || echo unknown)\n\nnfs_compute=$(ssh $ssh_opts ubuntu@hpc-compute01 'mountpoint -q /research && echo mounted || echo missing' 2>/dev/null || echo unknown)\n\ndisk_pct=$(ssh $ssh_opts ubuntu@hpc-controller \"df -P /research 2>/dev/null | awk 'NR==2 {gsub(\\\"%\\\",\\\"\\\",\\$5); print \\$5}'\" 2>/dev/null || echo 0)\n[ -n \"$disk_pct\" ] || disk_pct=0\n\nprom_controller=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://hpc-controller:9100/metrics || echo 000)\nprom_compute=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://hpc-compute01:9100/metrics || echo 000)\nprometheus=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:9090/-/healthy || echo 000)\ngrafana=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000/login || echo 000)\n\nprintf '{\"controller_reachable\":\"%s\",\"compute_reachable\":\"%s\",\"slurmctld\":\"%s\",\"controller_munge\":\"%s\",\"slurmd\":\"%s\",\"compute_munge\":\"%s\",\"slurm_controller\":\"%s\",\"slurm_state\":\"%s\",\"nfs_compute\":\"%s\",\"research_disk_pct\":%s,\"prom_controller\":\"%s\",\"prom_compute\":\"%s\",\"prometheus\":\"%s\",\"grafana\":\"%s\"}\\n' \\\n\"$controller_reachable\" \"$compute_reachable\" \"$slurmctld\" \"$controller_munge\" \"$slurmd\" \"$compute_munge\" \"$slurm_controller\" \"$slurm_state\" \"$nfs_compute\" \"$disk_pct\" \"$prom_controller\" \"$prom_compute\" \"$prometheus\" \"$grafana\"",
+        "workingDirectory": "/"
+      },
+      "id": "collect-health",
+      "name": "Collect Cluster Health",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = ($json.stdout || '').trim();\nlet h;\ntry {\n  h = JSON.parse(raw);\n} catch (e) {\n  return [{json: {status: \"DEGRADED\", repair_needed: true, severity: \"critical\", issues: [\"Health output was not valid JSON\"], raw}}];\n}\n\nconst issues = [];\nif (h.controller_reachable !== \"ok\") issues.push(\"hpc-controller unreachable\");\nif (h.compute_reachable !== \"ok\") issues.push(\"hpc-compute01 unreachable\");\nif (h.slurmctld !== \"active\") issues.push(\"slurmctld inactive\");\nif (h.controller_munge !== \"active\") issues.push(\"controller Munge inactive\");\nif (h.slurmd !== \"active\") issues.push(\"slurmd inactive\");\nif (h.compute_munge !== \"active\") issues.push(\"compute Munge inactive\");\nif (h.slurm_controller !== \"up\") issues.push(\"Slurm controller not responding\");\nif (![\"idle\",\"alloc\",\"mixed\",\"mix\"].includes((h.slurm_state || \"\").toLowerCase())) issues.push(`Slurm node state: ${h.slurm_state}`);\nif (h.nfs_compute !== \"mounted\") issues.push(\"NFS /research not mounted on compute node\");\nif (Number(h.research_disk_pct || 0) >= 85) issues.push(`Research disk usage high: ${h.research_disk_pct}%`);\nif (h.prom_controller !== \"200\") issues.push(\"Controller Node Exporter unavailable\");\nif (h.prom_compute !== \"200\") issues.push(\"Compute Node Exporter unavailable\");\nif (h.prometheus !== \"200\") issues.push(\"Prometheus unhealthy\");\nif (![\"200\",\"302\"].includes(h.grafana)) issues.push(\"Grafana unavailable\");\n\nlet severity = \"info\";\nif (issues.length) severity = Number(h.research_disk_pct || 0) >= 95 || h.controller_reachable !== \"ok\" || h.compute_reachable !== \"ok\" ? \"critical\" : \"warning\";\n\nreturn [{\n  json: {\n    ...h,\n    status: issues.length ? \"DEGRADED\" : \"HEALTHY\",\n    repair_needed: issues.length > 0,\n    severity,\n    issues,\n    checked_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "analyze-health",
+      "name": "Analyze Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "command",
+        "operation": "execute",
+        "command": "set +e\nssh_opts=\"-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new\"\n\necho \"HPC_AUTOPILOT_REPAIR_START\"\n\n# Controller services\nif ! ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active --quiet munge'; then\n  echo \"Restarting Munge on controller\"\n  ssh $ssh_opts ubuntu@hpc-controller 'sudo systemctl restart munge'\nfi\n\nif ! ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active --quiet slurmctld'; then\n  echo \"Restarting slurmctld\"\n  ssh $ssh_opts ubuntu@hpc-controller 'sudo systemctl restart slurmctld'\nfi\n\n# Compute services\nif ! ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active --quiet munge'; then\n  echo \"Restarting Munge on compute\"\n  ssh $ssh_opts ubuntu@hpc-compute01 'sudo systemctl restart munge'\nfi\n\nif ! ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active --quiet slurmd'; then\n  echo \"Restarting slurmd\"\n  ssh $ssh_opts ubuntu@hpc-compute01 'sudo systemctl restart slurmd'\nfi\n\n# NFS\nif ! ssh $ssh_opts ubuntu@hpc-compute01 'mountpoint -q /research'; then\n  echo \"Attempting NFS remount\"\n  ssh $ssh_opts ubuntu@hpc-compute01 'sudo mount -a'\nfi\n\n# Node Exporter\nif ! curl -fsS --max-time 3 http://hpc-controller:9100/metrics >/dev/null; then\n  echo \"Restarting controller Node Exporter\"\n  ssh $ssh_opts ubuntu@hpc-controller 'sudo systemctl restart prometheus-node-exporter'\nfi\n\nif ! curl -fsS --max-time 3 http://hpc-compute01:9100/metrics >/dev/null; then\n  echo \"Restarting compute Node Exporter\"\n  ssh $ssh_opts ubuntu@hpc-compute01 'sudo systemctl restart prometheus-node-exporter'\nfi\n\n# Monitoring services on hpc-admin\nif ! curl -fsS --max-time 3 http://localhost:9090/-/healthy >/dev/null; then\n  echo \"Restarting Prometheus\"\n  sudo systemctl restart prometheus\nfi\n\nif ! curl -fsS --max-time 3 http://localhost:3000/login >/dev/null; then\n  echo \"Restarting Grafana\"\n  sudo systemctl restart grafana-server\nfi\n\n# Resume node only when Slurm explicitly reports a recoverable DOWN/DRAIN state\nstate=$(ssh $ssh_opts ubuntu@hpc-controller \"sinfo -h -N -o '%T' | head -1\")\ncase \"$state\" in\n  *down*|*drain*|*drng*)\n    echo \"Attempting to resume hpc-compute01 from state: $state\"\n    ssh $ssh_opts ubuntu@hpc-controller 'sudo scontrol update NodeName=hpc-compute01 State=RESUME'\n    ;;\nesac\n\nsleep 7\necho \"HPC_AUTOPILOT_REPAIR_END\"",
+        "workingDirectory": "/"
+      },
+      "id": "auto-heal",
+      "name": "Conditional Auto-Heal",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "command",
+        "operation": "execute",
+        "command": "set -u\n\nssh_opts=\"-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new\"\n\ncontroller_reachable=$(ssh $ssh_opts ubuntu@hpc-controller 'echo ok' 2>/dev/null || echo fail)\ncompute_reachable=$(ssh $ssh_opts ubuntu@hpc-compute01 'echo ok' 2>/dev/null || echo fail)\n\nslurmctld=$(ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active slurmctld 2>/dev/null || true' 2>/dev/null || echo unknown)\ncontroller_munge=$(ssh $ssh_opts ubuntu@hpc-controller 'systemctl is-active munge 2>/dev/null || true' 2>/dev/null || echo unknown)\n\nslurmd=$(ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active slurmd 2>/dev/null || true' 2>/dev/null || echo unknown)\ncompute_munge=$(ssh $ssh_opts ubuntu@hpc-compute01 'systemctl is-active munge 2>/dev/null || true' 2>/dev/null || echo unknown)\n\nslurm_controller=$(ssh $ssh_opts ubuntu@hpc-controller 'scontrol ping 2>/dev/null | grep -q \"UP\" && echo up || echo down' 2>/dev/null || echo down)\nslurm_state=$(ssh $ssh_opts ubuntu@hpc-controller \"sinfo -h -N -o '%T' 2>/dev/null | head -1\" 2>/dev/null || echo unknown)\n\nnfs_compute=$(ssh $ssh_opts ubuntu@hpc-compute01 'mountpoint -q /research && echo mounted || echo missing' 2>/dev/null || echo unknown)\n\ndisk_pct=$(ssh $ssh_opts ubuntu@hpc-controller \"df -P /research 2>/dev/null | awk 'NR==2 {gsub(\\\"%\\\",\\\"\\\",\\$5); print \\$5}'\" 2>/dev/null || echo 0)\n[ -n \"$disk_pct\" ] || disk_pct=0\n\nprom_controller=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://hpc-controller:9100/metrics || echo 000)\nprom_compute=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://hpc-compute01:9100/metrics || echo 000)\nprometheus=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:9090/-/healthy || echo 000)\ngrafana=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000/login || echo 000)\n\nprintf '{\"controller_reachable\":\"%s\",\"compute_reachable\":\"%s\",\"slurmctld\":\"%s\",\"controller_munge\":\"%s\",\"slurmd\":\"%s\",\"compute_munge\":\"%s\",\"slurm_controller\":\"%s\",\"slurm_state\":\"%s\",\"nfs_compute\":\"%s\",\"research_disk_pct\":%s,\"prom_controller\":\"%s\",\"prom_compute\":\"%s\",\"prometheus\":\"%s\",\"grafana\":\"%s\"}\\n' \\\n\"$controller_reachable\" \"$compute_reachable\" \"$slurmctld\" \"$controller_munge\" \"$slurmd\" \"$compute_munge\" \"$slurm_controller\" \"$slurm_state\" \"$nfs_compute\" \"$disk_pct\" \"$prom_controller\" \"$prom_compute\" \"$prometheus\" \"$grafana\"",
+        "workingDirectory": "/"
+      },
+      "id": "verify-health",
+      "name": "Verify After Recovery",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        140,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const before = $('Analyze Health').first().json;\nconst raw = ($json.stdout || '').trim();\n\nlet after;\ntry {\n  after = JSON.parse(raw);\n} catch (e) {\n  after = {parse_error: true, raw};\n}\n\nconst issues = [];\nif (after.controller_reachable !== \"ok\") issues.push(\"hpc-controller unreachable\");\nif (after.compute_reachable !== \"ok\") issues.push(\"hpc-compute01 unreachable\");\nif (after.slurmctld !== \"active\") issues.push(\"slurmctld inactive\");\nif (after.controller_munge !== \"active\") issues.push(\"controller Munge inactive\");\nif (after.slurmd !== \"active\") issues.push(\"slurmd inactive\");\nif (after.compute_munge !== \"active\") issues.push(\"compute Munge inactive\");\nif (after.slurm_controller !== \"up\") issues.push(\"Slurm controller not responding\");\nif (![\"idle\",\"alloc\",\"mixed\",\"mix\"].includes((after.slurm_state || \"\").toLowerCase())) issues.push(`Slurm node state: ${after.slurm_state}`);\nif (after.nfs_compute !== \"mounted\") issues.push(\"NFS /research not mounted\");\nif (Number(after.research_disk_pct || 0) >= 85) issues.push(`Research disk usage high: ${after.research_disk_pct}%`);\nif (after.prom_controller !== \"200\") issues.push(\"Controller Node Exporter unavailable\");\nif (after.prom_compute !== \"200\") issues.push(\"Compute Node Exporter unavailable\");\nif (after.prometheus !== \"200\") issues.push(\"Prometheus unhealthy\");\nif (![\"200\",\"302\"].includes(after.grafana)) issues.push(\"Grafana unavailable\");\n\nlet finalStatus = \"HEALTHY\";\nif (issues.length) finalStatus = \"DEGRADED\";\nelse if (before.status === \"DEGRADED\") finalStatus = \"RECOVERED\";\n\nconst report = {\n  workflow: \"HPC Autopilot\",\n  final_status: finalStatus,\n  initial_status: before.status,\n  auto_heal_attempted: before.repair_needed,\n  initial_issues: before.issues || [],\n  remaining_issues: issues,\n  node_state: after.slurm_state,\n  research_disk_pct: Number(after.research_disk_pct || 0),\n  checked_at: new Date().toISOString()\n};\n\nconst line = `[${report.checked_at}] status=${report.final_status} initial=${report.initial_status} node=${report.node_state} disk=${report.research_disk_pct}% issues=\"${report.remaining_issues.join('; ')}\"\\n`;\n\nreturn [{json: {...report, log_b64: Buffer.from(line).toString('base64')}}];"
+      },
+      "id": "final-report",
+      "name": "Build Final Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "command",
+        "operation": "execute",
+        "command": "mkdir -p /home/ubuntu/kfi-hpc-lab\necho '{{$json.log_b64}}' | base64 -d >> /home/ubuntu/kfi-hpc-lab/automation.log\ntail -n 5 /home/ubuntu/kfi-hpc-lab/automation.log",
+        "workingDirectory": "/"
+      },
+      "id": "audit-log",
+      "name": "Write Audit Log",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        660,
+        20
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Collect Cluster Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Collect Cluster Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Cluster Health": {
+      "main": [
+        [
+          {
+            "node": "Analyze Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Health": {
+      "main": [
+        [
+          {
+            "node": "Conditional Auto-Heal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conditional Auto-Heal": {
+      "main": [
+        [
+          {
+            "node": "Verify After Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify After Recovery": {
+      "main": [
+        [
+          {
+            "node": "Build Final Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Report": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "00000000-0000-0000-0000-000000000001",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

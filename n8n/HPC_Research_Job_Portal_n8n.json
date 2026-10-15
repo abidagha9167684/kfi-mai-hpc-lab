@@ -1,0 +1,266 @@
+{
+  "name": "HPC Research Job Portal",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "HPC Research Job Submission",
+        "formDescription": "Submit an approved research workload to the KFI-MAI Slurm cluster.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Researcher",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "researcher1"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Job Name",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "medical-analysis"
+            },
+            {
+              "fieldLabel": "Job Type",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Medical Analysis"
+                  },
+                  {
+                    "option": "Hostname Test"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "CPU Count",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "1"
+                  },
+                  {
+                    "option": "2"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Time Limit",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "5 minutes"
+                  },
+                  {
+                    "option": "10 minutes"
+                  },
+                  {
+                    "option": "15 minutes"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Partition",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "research"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "buttonLabel": "Submit Research Job"
+        }
+      },
+      "id": "form-trigger",
+      "name": "HPC Research Job Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -760,
+        0
+      ],
+      "webhookId": "hpc-research-job-portal"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\n\nconst researcher = String(input['Researcher'] || '').trim();\nconst rawJobName = String(input['Job Name'] || '').trim();\nconst jobType = String(input['Job Type'] || '').trim();\nconst cpuChoice = String(input['CPU Count'] || '1').trim();\nconst timeChoice = String(input['Time Limit'] || '').trim();\nconst partition = String(input['Partition'] || '').trim();\n\nif (researcher !== 'researcher1') {\n  throw new Error('Only researcher1 is currently allowed.');\n}\n\nif (!/^[A-Za-z0-9._-]{1,50}$/.test(rawJobName)) {\n  throw new Error('Job Name may contain only letters, numbers, dot, underscore and hyphen.');\n}\n\nconst allowedCPUs = { '1': 1, '2': 2 };\nif (!(cpuChoice in allowedCPUs)) {\n  throw new Error('Invalid CPU Count.');\n}\n\nconst timeMap = {\n  '5 minutes': '00:05:00',\n  '10 minutes': '00:10:00',\n  '15 minutes': '00:15:00'\n};\n\nif (!(timeChoice in timeMap)) {\n  throw new Error('Invalid Time Limit.');\n}\n\nif (partition !== 'research') {\n  throw new Error('Invalid partition.');\n}\n\nconst jobs = {\n  'Medical Analysis': '/research/projects/medical_job.sh',\n  'Hostname Test': '/research/projects/hostname_job.sh'\n};\n\nif (!(jobType in jobs)) {\n  throw new Error('Invalid Job Type.');\n}\n\nreturn [{\n  json: {\n    researcher,\n    jobName: rawJobName,\n    jobType,\n    cpus: allowedCPUs[cpuChoice],\n    timeLimit: timeMap[timeChoice],\n    partition,\n    script: jobs[jobType],\n    submittedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "prepare-job",
+      "name": "Prepare Slurm Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "set -e\n\nSSH=\"sudo -n ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new\"\n\n$SSH ubuntu@hpc-controller \"test -x '{{ $json.script }}'\"\n\n$SSH ubuntu@hpc-controller \"sudo -n -u researcher1 sbatch --parsable --job-name='{{ $json.jobName }}' --partition='{{ $json.partition }}' --cpus-per-task='{{ $json.cpus }}' --time='{{ $json.timeLimit }}' '{{ $json.script }}'\""
+      },
+      "id": "submit-job",
+      "name": "Submit Slurm Job",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        -220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepared = $('Prepare Slurm Job').first().json;\nconst stdout = String($json.stdout || '').trim();\nconst stderr = String($json.stderr || '').trim();\n\nif (!stdout) {\n  throw new Error(`Slurm returned no Job ID. ${stderr}`);\n}\n\nconst jobIdMatch = stdout.match(/(\\d+)/);\nif (!jobIdMatch) {\n  throw new Error(`Could not parse Slurm Job ID from: ${stdout}`);\n}\n\nreturn [{\n  json: {\n    success: true,\n    job_id: jobIdMatch[1],\n    researcher: prepared.researcher,\n    job_name: prepared.jobName,\n    job_type: prepared.jobType,\n    cpus: prepared.cpus,\n    time_limit: prepared.timeLimit,\n    partition: prepared.partition,\n    script: prepared.script,\n    submitted_at: prepared.submittedAt,\n    slurm_response: stdout\n  }\n}];"
+      },
+      "id": "parse-job-id",
+      "name": "Parse Job ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "SSH=\"sudo -n ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new\"\n\n$SSH ubuntu@hpc-controller \"squeue -h -j {{ $json.job_id }} -o '%i|%j|%T|%M|%P|%N' 2>/dev/null || true\""
+      },
+      "id": "check-job",
+      "name": "Check Initial Job Status",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const submitted = $('Parse Job ID').first().json;\nconst line = String($json.stdout || '').trim();\n\nlet state = 'SUBMITTED';\nlet runtime = '-';\nlet node = '-';\n\nif (line) {\n  const parts = line.split('|');\n  if (parts.length >= 6) {\n    state = parts[2] || 'SUBMITTED';\n    runtime = parts[3] || '-';\n    node = parts[5] || '-';\n  }\n}\n\nreturn [{\n  json: {\n    ...submitted,\n    state,\n    runtime,\n    node,\n    result_path: '/research/results',\n    message: `Job ${submitted.job_id} submitted successfully`\n  }\n}];"
+      },
+      "id": "build-result",
+      "name": "Build Submission Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "completionTitle": "Research Job Submitted",
+        "completionMessage": "=Job ID: {{ $json.job_id }}\\n\\nJob: {{ $json.job_name }}\\nType: {{ $json.job_type }}\\nState: {{ $json.state }}\\nPartition: {{ $json.partition }}\\nCPU(s): {{ $json.cpus }}\\nTime limit: {{ $json.time_limit }}\\nNode: {{ $json.node }}\\n\\nResults directory: {{ $json.result_path }}",
+        "options": {}
+      },
+      "id": "form-complete",
+      "name": "Submission Result",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        900,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "HPC Research Job Form": {
+      "main": [
+        [
+          {
+            "node": "Prepare Slurm Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Slurm Job": {
+      "main": [
+        [
+          {
+            "node": "Submit Slurm Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Slurm Job": {
+      "main": [
+        [
+          {
+            "node": "Parse Job ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Job ID": {
+      "main": [
+        [
+          {
+            "node": "Check Initial Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Initial Job Status": {
+      "main": [
+        [
+          {
+            "node": "Build Submission Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Submission Result": {
+      "main": [
+        [
+          {
+            "node": "Submission Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "e3868b8e-e7ec-4fbd-9821-5b15332dc29e",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

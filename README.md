@@ -733,6 +733,8 @@ Two n8n workflows sit on top of the cluster (n8n connects to `hpc-admin`, which 
 - **HPC Autopilot**: checks Slurm, Munge, NFS, Node Exporter, Prometheus and Grafana, repairs safe failures, verifies the repair and writes an audit entry. Details: [docs/n8n-autopilot.md](docs/n8n-autopilot.md)
 - **Research Job Portal**: a browser form that submits an approved Slurm job and shows the result. Details: [docs/n8n-research-portal.md](docs/n8n-research-portal.md)
 
+Importable workflow exports are in [n8n/](n8n/).
+
 More incidents and fixes: [docs/troubleshooting.md](docs/troubleshooting.md). The importable Grafana dashboard is [monitoring/KFI-MAI-HPC-Grafana-Dashboard.json](monitoring/KFI-MAI-HPC-Grafana-Dashboard.json).
 
 ## 15. Troubleshooting Experience
@@ -863,6 +865,10 @@ kfi-mai-hpc-lab/
 │   ├── security.yml
 │   ├── slurm_packages.yml
 │   └── users.yml
+│
+├── n8n/
+│   ├── HPC_Autopilot_n8n.json
+│   └── HPC_Research_Job_Portal_n8n.json
 │
 ├── monitoring/
 │   ├── prometheus.yml
