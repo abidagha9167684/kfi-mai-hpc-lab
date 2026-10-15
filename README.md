@@ -6,6 +6,17 @@ The infrastructure was built on AWS EC2 using Ubuntu Linux and follows a small r
 
 The project was created as a practical learning environment for a Technical Administrator role supporting research and HPC infrastructure.
 
+![Architecture overview](screenshots/architecture-overview.png)
+
+### Screenshots
+| Grafana HPC dashboard | n8n Autopilot after auto-recovery |
+|---|---|
+| ![Grafana](screenshots/grafana-hpc-dashboard.png) | ![Autopilot](screenshots/n8n-autopilot-recovered.png) |
+
+| Researcher job portal (completed Slurm job) |
+|---|
+| ![Portal](screenshots/research-job-portal-result.png) |
+
 ## 1. Project Overview
 
 The environment contains three Linux servers:
@@ -58,6 +69,7 @@ hpc-compute01
 | Git | Version control |
 | GitHub | Source code and project documentation |
 | Bash | Administrative and backup scripts |
+| n8n | Self-healing Autopilot workflow and researcher job portal |
 
 ## 3. Architecture
 
@@ -714,6 +726,15 @@ Recover deleted file
 
 This confirms that the backup contains usable recovery data.
 
+## 14a. n8n Automation
+
+Two n8n workflows sit on top of the cluster (n8n connects to `hpc-admin`, which reaches the other nodes over SSH):
+
+- **HPC Autopilot**: checks Slurm, Munge, NFS, Node Exporter, Prometheus and Grafana, repairs safe failures, verifies the repair and writes an audit entry. Details: [docs/n8n-autopilot.md](docs/n8n-autopilot.md)
+- **Research Job Portal**: a browser form that submits an approved Slurm job and shows the result. Details: [docs/n8n-research-portal.md](docs/n8n-research-portal.md)
+
+More incidents and fixes: [docs/troubleshooting.md](docs/troubleshooting.md). The importable Grafana dashboard is [monitoring/KFI-MAI-HPC-Grafana-Dashboard.json](monitoring/KFI-MAI-HPC-Grafana-Dashboard.json).
+
 ## 15. Troubleshooting Experience
 
 Several real infrastructure issues were discovered and resolved during the project.
@@ -844,7 +865,8 @@ kfi-mai-hpc-lab/
 │   └── users.yml
 │
 ├── monitoring/
-│   └── prometheus.yml
+│   ├── prometheus.yml
+│   └── KFI-MAI-HPC-Grafana-Dashboard.json
 │
 ├── research/
 │   ├── medical_analysis.py
@@ -857,6 +879,9 @@ kfi-mai-hpc-lab/
 │   └── slurm.conf
 │
 ├── docs/
+│   ├── n8n-autopilot.md
+│   ├── n8n-research-portal.md
+│   └── troubleshooting.md
 │
 ├── screenshots/
 │
